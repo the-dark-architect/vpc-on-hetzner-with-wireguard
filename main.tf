@@ -1,4 +1,3 @@
-# variables.tf
 variable "hcloud_token" {
   type      = string
   sensitive = true
@@ -9,14 +8,9 @@ variable "client_name" {
   default = "admin"
 }
 
-variable "ssh_public_keys" {
-  type    = list(string)
-  default = []
-}
-
 variable "vpc_cidr" {
   type    = string
-  default = "10.8.4.0/24"
+  default = "10.3.0.0/16"
 }
 
 variable "vpc_name" {
@@ -38,33 +32,19 @@ provider "hcloud" {
   token = var.hcloud_token
 }
 
-data "hcloud_network" "main" {
-  name = var.vpc_name
-}
-
 resource "hcloud_network" "main" {
-  count = data.hcloud_network.main == null ? 1 : 0
-
   name     = var.vpc_name
   ip_range = var.vpc_cidr
 }
 
-resource "hcloud_network_subnet" "main" {
-  count = data.hcloud_network.main == null ? 1 : 0
-
-  network_id   = hcloud_network.main[0].id
+resource "hcloud_network_subnet" "wireguard" {
+  network_id   = hcloud_network.main.id
   type         = "cloud"
   network_zone = "eu-central"
-  ip_range     = var.vpc_cidr
+  ip_range     = cidrsubnet(var.vpc_cidr, 8, 1) 
 }
 
-resource "hcloud_ssh_key" "default" {
-  for_each = { for key in var.ssh_public_keys : 
-    regex("\\s([^\\s]+)$", key)[0] => key 
-  }
-
-  name       = each.key
-  public_key = each.value
+data "hcloud_ssh_keys" "all" {
 }
 
 resource "hcloud_server" "wireguard" {
@@ -72,10 +52,11 @@ resource "hcloud_server" "wireguard" {
   image       = "ubuntu-24.04"
   server_type = "cx23"
   location    = "hel1"
-  ssh_keys    = [for key in hcloud_ssh_key.default : key.id]
-  
-  network {
-    network_id = data.hcloud_network.main != null ? data.hcloud_network.main.id : hcloud_network.main[0].id
+  ssh_keys    = data.hcloud_ssh_keys.all.ssh_keys[*].id
+
+  public_net {
+    ipv4_enabled = true
+    ipv6_enabled = false
   }
 
   user_data = <<-EOT
@@ -137,6 +118,11 @@ final_message: "WireGuard setup completed successfully!"
 EOT
 }
 
+resource "hcloud_server_network" "wireguard" {
+  server_id  = hcloud_server.wireguard.id
+  subnet_id  = hcloud_network_subnet.wireguard.id
+}
+
 output "server_ip" {
   value = hcloud_server.wireguard.ipv4_address
 }
@@ -146,9 +132,9 @@ output "connect_command" {
 }
 
 output "vpc_network_name" {
-  value = data.hcloud_network.main != null ? data.hcloud_network.main.name : hcloud_network.main[0].name
+  value = hcloud_network.main.name
 }
 
 output "ssh_key_names" {
-  value = [for key in hcloud_ssh_key.default : key.name]
+  value = [for key in data.hcloud_ssh_keys.all.ssh_keys : key.name]
 }
